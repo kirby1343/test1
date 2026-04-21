@@ -1,0 +1,915 @@
+import tkinter as tk
+from tkinter import scrolledtext, ttk
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use("TkAgg")
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from scipy import stats as scipy_stats
+import threading
+from openai import OpenAI
+
+# ── Online AI Client ─────────────────────────────────────
+client = OpenAI(
+    base_url="https://hermes.ai.unturf.com/v1",
+    api_key="choose-any-value"
+)
+AI_MODEL = "adamo1139/Hermes-3-Llama-3.1-8B-FP8-Dynamic"
+
+# ── Colors ──────────────────────────────────────────────
+BG_DARK     = "#1a1a1f"
+BG_CARD     = "#242429"
+BG_PANEL    = "#2c2c34"
+BG_ENTRY    = "#18181d"
+ACCENT_PINK = "#e8799e"
+ACCENT_LIGHT= "#f0a8be"
+CREAM       = "#f5ead8"
+CREAM_DIM   = "#c9b89a"
+TEXT_GRAY   = "#8a8490"
+BORDER      = "#3a3a44"
+PINK_DEEP   = "#c45c7e"
+GREEN_SOFT  = "#7fcfa0"
+BLUE_SOFT   = "#7ab8d9"
+ORANGE_SOFT = "#e8a87c"
+
+# ── Window ───────────────────────────────────────────────
+root = tk.Tk()
+root.title("Monte Carlo Reserves Estimator")
+root.geometry("1500x900")
+root.configure(bg=BG_DARK)
+root.minsize(1100, 700)
+
+FONT_HEADING = ("Georgia", 10, "bold")
+FONT_LABEL   = ("Courier New", 9)
+FONT_SMALL   = ("Courier New", 8)
+FONT_MONO    = ("Courier New", 9)
+
+# ── Scroll canvas ────────────────────────────────────────
+outer = tk.Frame(root, bg=BG_DARK)
+outer.pack(fill="both", expand=True)
+
+scroll_canvas = tk.Canvas(outer, bg=BG_DARK, highlightthickness=0)
+scrollbar     = tk.Scrollbar(outer, orient="vertical", command=scroll_canvas.yview)
+workspace     = tk.Frame(scroll_canvas, bg=BG_DARK)
+
+workspace.bind("<Configure>",
+    lambda e: scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all")))
+scroll_canvas.create_window((0, 0), window=workspace, anchor="nw")
+scroll_canvas.configure(yscrollcommand=scrollbar.set)
+scroll_canvas.pack(side="left", fill="both", expand=True)
+scrollbar.pack(side="right", fill="y")
+scroll_canvas.bind_all("<MouseWheel>",
+    lambda e: scroll_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+# ── Header ───────────────────────────────────────────────
+header = tk.Frame(workspace, bg=BG_PANEL)
+header.pack(fill="x")
+tk.Frame(header, bg=ACCENT_PINK, height=3).pack(fill="x")
+title_bar = tk.Frame(header, bg=BG_PANEL)
+title_bar.pack(fill="x", padx=20, pady=10)
+tk.Label(title_bar, text="◈  MONTE CARLO RESERVES ESTIMATOR",
+         font=("Georgia", 14, "bold"), fg=CREAM, bg=BG_PANEL).pack(side="left")
+tk.Label(title_bar, text="",
+         font=FONT_MONO, fg=ACCENT_PINK, bg=BG_PANEL).pack(side="left", padx=20)
+
+# ── Main layout ──────────────────────────────────────────
+main = tk.Frame(workspace, bg=BG_DARK)
+main.pack(fill="both", expand=True, padx=10, pady=10)
+main.columnconfigure(0, weight=0)
+main.columnconfigure(1, weight=1)
+
+# ── Left panel ───────────────────────────────────────────
+left = tk.Frame(main, bg=BG_CARD, padx=10, pady=10, width=280)
+left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+left.grid_propagate(False)
+
+def section_label(parent, text):
+    f = tk.Frame(parent, bg=BG_CARD)
+    f.pack(fill="x", pady=(10, 3))
+    tk.Frame(f, bg=ACCENT_PINK, height=1).pack(fill="x")
+    tk.Label(f, text=text, font=FONT_HEADING, fg=ACCENT_PINK,
+             bg=BG_CARD, anchor="w").pack(fill="x", pady=2)
+
+section_label(left, "SIMULATION CONTROL")
+iter_frame = tk.Frame(left, bg=BG_CARD)
+iter_frame.pack(fill="x", pady=3)
+tk.Label(iter_frame, text="Iterations", font=FONT_LABEL, fg=CREAM_DIM,
+         bg=BG_CARD, width=14, anchor="w").pack(side="left")
+iter_entry = tk.Entry(iter_frame, bg=BG_ENTRY, fg=CREAM,
+                      insertbackground=ACCENT_PINK, font=FONT_MONO, relief="flat", bd=4)
+iter_entry.insert(0, "10000")
+iter_entry.pack(side="right", fill="x", expand=True)
+
+
+section_label(left, "RESERVOIR PARAMETERS")
+param_entries = {}
+
+def param(parent, label, defaults, unit=""):
+    box = tk.Frame(parent, bg=BG_PANEL, padx=8, pady=6)
+    box.pack(fill="x", pady=3)
+    hdr = tk.Frame(box, bg=BG_PANEL)
+    hdr.pack(fill="x")
+    tk.Label(hdr, text=label, font=FONT_HEADING, fg=CREAM, bg=BG_PANEL, anchor="w").pack(side="left")
+    if unit:
+        tk.Label(hdr, text=unit, font=FONT_SMALL, fg=TEXT_GRAY, bg=BG_PANEL).pack(side="right")
+    row = tk.Frame(box, bg=BG_PANEL)
+    row.pack(fill="x", pady=2)
+    entries = []
+    for lbl, val in zip(["Min", "Mode", "Max"], defaults):
+        col = tk.Frame(row, bg=BG_PANEL)
+        col.pack(side="left", expand=True, fill="x", padx=2)
+        tk.Label(col, text=lbl, font=FONT_SMALL, fg=TEXT_GRAY, bg=BG_PANEL).pack()
+        e = tk.Entry(col, bg=BG_ENTRY, fg=ACCENT_LIGHT, justify="center",
+                     font=FONT_MONO, insertbackground=ACCENT_PINK, relief="flat", bd=3, width=7)
+        e.insert(0, str(val))
+        e.pack(fill="x")
+        entries.append(e)
+    return entries
+
+param_entries["A"]   = param(left, "AREA",           [900, 1000, 1200], "acres")
+param_entries["h"]   = param(left, "THICKNESS",       [45, 55, 70],     "ft")
+param_entries["phi"] = param(left, "POROSITY",        [0.18, 0.22, 0.26])
+param_entries["So"]  = param(left, "OIL SATURATION",  [0.65, 0.75, 0.85])
+param_entries["RF"]  = param(left, "RECOVERY FACTOR", [0.2, 0.3, 0.4])
+param_entries["Bo"]  = param(left, "FVF (Bo)",        [1.1, 1.2, 1.3],  "RB/STB")
+
+tk.Frame(left, bg=BG_CARD, height=10).pack()
+run_btn = tk.Button(left, text="▶  RUN SIMULATION",
+                    bg=ACCENT_PINK, fg=BG_DARK, font=("Georgia", 10, "bold"),
+                    activebackground=PINK_DEEP, activeforeground=CREAM,
+                    relief="flat", bd=0, pady=8, cursor="hand2")
+run_btn.pack(fill="x")
+
+# ── Error banner ─────────────────────────────────────────
+error_banner = tk.Frame(left, bg="#3a1a1a", padx=8, pady=6)
+# Not packed yet — shown only on error
+
+error_icon_lbl = tk.Label(error_banner, text="⚠", font=("Georgia", 11, "bold"),
+                           fg="#e85a4a", bg="#3a1a1a")
+error_icon_lbl.pack(side="left", padx=(0, 6))
+
+error_text_lbl = tk.Label(error_banner, text="", font=FONT_SMALL, fg="#f0a090",
+                           bg="#3a1a1a", wraplength=190, justify="left", anchor="w")
+error_text_lbl.pack(side="left", fill="x", expand=True)
+
+def show_error(msg):
+    """Display a styled error banner below the Run button."""
+    error_text_lbl.config(text=msg)
+    error_banner.pack(fill="x", pady=(6, 0))
+    # Flash the run button red briefly
+    run_btn.config(bg="#e85a4a")
+    root.after(600, lambda: run_btn.config(bg=ACCENT_PINK))
+    # Auto-hide after 6 seconds
+    root.after(6000, hide_error)
+
+def hide_error():
+    error_banner.pack_forget()
+
+# ── Right panel ──────────────────────────────────────────
+right = tk.Frame(main, bg=BG_DARK)
+right.grid(row=0, column=1, sticky="nsew")
+
+formula_bar = tk.Frame(right, bg=BG_PANEL)
+formula_bar.pack(fill="x", pady=(0, 8))
+
+# Configure grid to center content vertically
+formula_bar.grid_rowconfigure(0, weight=1)
+formula_bar.grid_columnconfigure(0, weight=1)
+
+formula_label = tk.Label(
+    formula_bar,
+    text="Npo  =  ( 7758 × A × h × φ × So × RF ) / Bo",
+    font=("Courier New", 10, "bold"),
+    fg=CREAM,
+    bg=BG_PANEL,
+    anchor="center",
+    justify="center"
+)
+
+formula_label.grid(row=0, column=0, sticky="nsew")
+
+# ── Result cards ─────────────────────────────────────────
+results_row = tk.Frame(right, bg=BG_DARK)
+results_row.pack(fill="x", pady=(0, 8))
+for i in range(5):
+    results_row.columnconfigure(i, weight=1)
+
+result_cards = {}
+for i, (key, subtitle, color) in enumerate([
+    ("P90",   "Conservative", "#c45c7e"),
+    ("P50",   "Most Likely",   BLUE_SOFT),
+    ("P10",   "Optimistic",    GREEN_SOFT),
+    ("MEAN",  "Expected",      ORANGE_SOFT),
+    ("MMSTB", "Total Volume",  CREAM),
+]):
+    card = tk.Frame(results_row, bg=BG_CARD, padx=8, pady=8)
+    card.grid(row=0, column=i, sticky="ew", padx=3)
+    tk.Frame(card, bg=color, height=2).pack(fill="x")
+    tk.Label(card, text=key, font=("Georgia", 9, "bold"), fg=color, bg=BG_CARD).pack()
+    tk.Label(card, text=subtitle, font=FONT_SMALL, fg=TEXT_GRAY, bg=BG_CARD).pack()
+    val_lbl = tk.Label(card, text="—", font=("Courier New", 10, "bold"), fg=color, bg=BG_CARD)
+    val_lbl.pack(pady=2)
+    sub_lbl = tk.Label(card, text="", font=FONT_SMALL, fg=TEXT_GRAY, bg=BG_CARD)
+    sub_lbl.pack()
+    result_cards[key] = (val_lbl, sub_lbl)
+
+# ── Info cards ───────────────────────────────────────────
+info_row = tk.Frame(right, bg=BG_DARK)
+info_row.pack(fill="x", pady=(0, 8))
+for i in range(3):
+    info_row.columnconfigure(i, weight=1)
+
+info_cards = {}
+for i, (key, subtitle) in enumerate([
+    ("SKEWNESS",   "Distribution Shape"),
+    ("RISK LEVEL", "Uncertainty Rating"),
+    ("CONFIDENCE", "Estimate Confidence"),
+]):
+    card = tk.Frame(info_row, bg=BG_PANEL, padx=10, pady=7, height=110)
+    card.grid(row=0, column=i, sticky="nsew", padx=3)
+    card.grid_propagate(False)
+    inner = tk.Frame(card, bg=BG_PANEL)
+    inner.place(relx=0.5, rely=0.5, anchor="center")
+    tk.Label(inner, text=key, font=FONT_HEADING, fg=ACCENT_PINK, bg=BG_PANEL).pack()
+    tk.Label(inner, text=subtitle, font=FONT_SMALL, fg=TEXT_GRAY, bg=BG_PANEL).pack()
+    val_lbl  = tk.Label(inner, text="—", font=("Georgia", 11, "bold"), fg=CREAM, bg=BG_PANEL)
+    val_lbl.pack(pady=3)
+    desc_lbl = tk.Label(inner, text="", font=FONT_SMALL, fg=CREAM_DIM, bg=BG_PANEL,
+                        wraplength=200, justify="center")
+    desc_lbl.pack()
+    info_cards[key] = (val_lbl, desc_lbl)
+
+# ── Notebook ─────────────────────────────────────────────
+style = ttk.Style()
+style.theme_use("default")
+style.configure("Custom.TNotebook", background=BG_DARK, borderwidth=0, tabmargins=0)
+style.configure("Custom.TNotebook.Tab", background=BG_CARD, foreground=TEXT_GRAY,
+                padding=[16, 6], font=("Georgia", 9, "bold"), borderwidth=0)
+style.map("Custom.TNotebook.Tab",
+          background=[("selected", BG_PANEL)],
+          foreground=[("selected", ACCENT_PINK)])
+style.configure("Custom.Treeview",
+    background=BG_CARD, fieldbackground=BG_CARD,
+    foreground=CREAM, rowheight=28, font=FONT_MONO)
+style.configure("Custom.Treeview.Heading",
+    background=BG_PANEL, foreground=ACCENT_PINK, font=("Georgia", 9, "bold"))
+style.map("Custom.Treeview",
+          background=[("selected", "#3a3040")],
+          foreground=[("selected", ACCENT_LIGHT)])
+
+notebook = ttk.Notebook(right, style="Custom.TNotebook")
+notebook.pack(fill="both", expand=True)
+
+charts_tab = tk.Frame(notebook, bg=BG_DARK)
+table_tab  = tk.Frame(notebook, bg=BG_DARK)
+iter_tab   = tk.Frame(notebook, bg=BG_DARK)
+ai_tab     = tk.Frame(notebook, bg=BG_DARK)
+notebook.add(charts_tab, text="     CHARTS  ")
+notebook.add(table_tab,  text="     SIMULATION TABLE  ")
+notebook.add(iter_tab,   text="     ITERATION RESULTS  ")
+notebook.add(ai_tab,     text="     AI ANALYST  ")
+
+# ── Charts tab ───────────────────────────────────────────
+graph_card = tk.Frame(charts_tab, bg=BG_CARD)
+graph_card.pack(fill="both", expand=True, padx=6, pady=6)
+
+# ── Simulation table tab ─────────────────────────────────
+table_outer = tk.Frame(table_tab, bg=BG_DARK)
+table_outer.pack(fill="both", expand=True, padx=10, pady=10)
+tk.Label(table_outer, text="SIMULATION RESULTS — DETAILED STATISTICS",
+         font=FONT_HEADING, fg=ACCENT_PINK, bg=BG_DARK, anchor="w").pack(fill="x", pady=(0, 6))
+
+table_frame = tk.Frame(table_outer, bg=BG_CARD)
+table_frame.pack(fill="both", expand=True)
+table_frame.rowconfigure(0, weight=1)
+table_frame.columnconfigure(0, weight=1)
+
+TABLE_COLS = ["Metric", "Value (STB)", "Value (MMSTB)", "Notes"]
+table_tv = ttk.Treeview(table_frame, columns=TABLE_COLS, show="headings", height=18,
+                         style="Custom.Treeview")
+for col in TABLE_COLS:
+    table_tv.heading(col, text=col, anchor="center")
+    table_tv.column(col, width=200, anchor="center", stretch=True)
+table_tv.column("Metric", anchor="w", width=240, stretch=True)
+table_tv.column("Notes",  anchor="w", width=300, stretch=True)
+
+vsb_table = ttk.Scrollbar(table_frame, orient="vertical", command=table_tv.yview)
+table_tv.configure(yscrollcommand=vsb_table.set)
+table_tv.grid(row=0, column=0, sticky="nsew")
+vsb_table.grid(row=0, column=1, sticky="ns")
+
+def _fit_table_cols():
+    table_tv.update_idletasks()
+    total = table_frame.winfo_width() - vsb_table.winfo_width() - 4
+    if total < 10:
+        root.after(100, _fit_table_cols)
+        return
+    w_m = int(total * 0.28)
+    w_s = int(total * 0.20)
+    w_mm = int(total * 0.16)
+    table_tv.column("Metric",        width=max(1, w_m))
+    table_tv.column("Value (STB)",   width=max(1, w_s))
+    table_tv.column("Value (MMSTB)", width=max(1, w_mm))
+    table_tv.column("Notes",         width=max(1, total - w_m - w_s - w_mm))
+
+table_frame.bind("<Configure>", lambda e: root.after(30, _fit_table_cols))
+root.after(300, _fit_table_cols)
+
+# ── Iteration results tab ─────────────────────────────────
+iter_tab.rowconfigure(0, weight=0)
+iter_tab.rowconfigure(1, weight=1)
+iter_tab.columnconfigure(0, weight=1)
+
+iter_header = tk.Frame(iter_tab, bg=BG_DARK)
+iter_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 4))
+tk.Label(iter_header, text="SIMULATION ITERATION RESULTS",
+         font=FONT_HEADING, fg=ACCENT_PINK, bg=BG_DARK, anchor="w").pack(side="left")
+iter_count_lbl = tk.Label(iter_header, text="", font=FONT_SMALL, fg=TEXT_GRAY, bg=BG_DARK)
+iter_count_lbl.pack(side="right")
+
+iter_frame_tv = tk.Frame(iter_tab, bg=BG_CARD)
+iter_frame_tv.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+iter_frame_tv.rowconfigure(0, weight=1)
+iter_frame_tv.columnconfigure(0, weight=1)
+
+ITER_COLS = ["#", "Area", "Thickness", "Porosity", "OilSat", "RF", "Bo", "Npo (STB)", "Npo (MMSTB)"]
+
+iter_tv = ttk.Treeview(iter_frame_tv, columns=ITER_COLS, show="headings",
+                        style="Custom.Treeview")
+ITER_COL_ANCHORS = {
+    "#": "center", "Area": "center", "Thickness": "center",
+    "Porosity": "center", "OilSat": "center", "RF": "center",
+    "Bo": "center", "Npo (STB)": "center", "Npo (MMSTB)": "center"
+}
+for col in ITER_COLS:
+    iter_tv.heading(col, text=col, anchor="center")
+    iter_tv.column(col, width=110, anchor=ITER_COL_ANCHORS[col], stretch=True, minwidth=60)
+
+vsb_iter = ttk.Scrollbar(iter_frame_tv, orient="vertical",   command=iter_tv.yview)
+hsb_iter = ttk.Scrollbar(iter_frame_tv, orient="horizontal", command=iter_tv.xview)
+iter_tv.configure(yscrollcommand=vsb_iter.set, xscrollcommand=hsb_iter.set)
+iter_tv.grid(row=0, column=0, sticky="nsew")
+vsb_iter.grid(row=0, column=1, sticky="ns")
+hsb_iter.grid(row=1, column=0, sticky="ew")
+
+def _fit_iter_cols():
+    iter_tv.update_idletasks()
+    total = iter_frame_tv.winfo_width() - vsb_iter.winfo_width() - 6
+    if total < 10:
+        root.after(100, _fit_iter_cols)
+        return
+    w_id   = max(40,  int(total * 0.05))
+    w_npo  = max(120, int(total * 0.15))
+    w_mm   = max(120, int(total * 0.15))
+    w_rest = max(60,  int((total - w_id - w_npo - w_mm) / 6))
+    iter_tv.column("#", width=w_id)
+    for c in ["Area", "Thickness", "Porosity", "OilSat", "RF", "Bo"]:
+        iter_tv.column(c, width=w_rest)
+    iter_tv.column("Npo (STB)",   width=w_npo)
+    iter_tv.column("Npo (MMSTB)", width=w_mm)
+
+iter_frame_tv.bind("<Configure>", lambda e: root.after(30, _fit_iter_cols))
+root.after(500, _fit_iter_cols)
+
+# ── AI Analyst tab ───────────────────────────────────────
+ai_inner = tk.Frame(ai_tab, bg=BG_DARK, padx=14, pady=14)
+ai_inner.pack(fill="both", expand=True)
+
+# Header row with title + status indicator
+ai_header_row = tk.Frame(ai_inner, bg=BG_DARK)
+ai_header_row.pack(fill="x", pady=(0, 2))
+tk.Label(ai_header_row, text="AI PETROLEUM ANALYST",
+         font=FONT_HEADING, fg=ACCENT_PINK, bg=BG_DARK).pack(side="left")
+
+ai_status_lbl = tk.Label(ai_header_row, text="● ONLINE",
+                          font=FONT_SMALL, fg=GREEN_SOFT, bg=BG_DARK)
+ai_status_lbl.pack(side="right")
+
+tk.Label(ai_inner, text=f"Powered by Hermes-3 via {client.base_url}",
+         font=FONT_SMALL, fg=TEXT_GRAY, bg=BG_DARK).pack(anchor="w", pady=(0, 8))
+
+chat_box = scrolledtext.ScrolledText(ai_inner, height=16, bg=BG_CARD, fg=CREAM,
+    font=FONT_MONO, insertbackground=ACCENT_PINK, relief="flat", bd=0,
+    selectbackground="#3a3040")
+chat_box.pack(fill="both", expand=True, pady=(0, 8))
+chat_box.config(state="disabled")
+
+# Configure text tags for colored output
+chat_box.tag_configure("user_tag",  foreground=ACCENT_LIGHT)
+chat_box.tag_configure("ai_tag",    foreground=GREEN_SOFT)
+chat_box.tag_configure("sys_tag",   foreground=ORANGE_SOFT)
+chat_box.tag_configure("err_tag",   foreground="#e85a4a")
+chat_box.tag_configure("wait_tag",  foreground=TEXT_GRAY)
+
+def insert_chat(role, text):
+    chat_box.config(state="normal")
+    tag = {"user": "user_tag", "ai": "ai_tag", "sys": "sys_tag",
+           "err": "err_tag", "wait": "wait_tag"}.get(role, "ai_tag")
+    chat_box.insert(tk.END, text, tag)
+    chat_box.see(tk.END)
+    chat_box.config(state="disabled")
+
+entry_row2 = tk.Frame(ai_inner, bg=BG_DARK)
+entry_row2.pack(fill="x")
+
+PLACEHOLDER = "Ask about your simulation results, risk, interpretation..."
+chat_entry = tk.Entry(entry_row2, bg=BG_ENTRY, fg=TEXT_GRAY,
+                      insertbackground=ACCENT_PINK, font=FONT_MONO, relief="flat", bd=4)
+chat_entry.insert(0, PLACEHOLDER)
+chat_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+def focus_in(e):
+    if chat_entry.get() == PLACEHOLDER:
+        chat_entry.delete(0, tk.END)
+        chat_entry.config(fg=CREAM)
+
+def focus_out(e):
+    if not chat_entry.get():
+        chat_entry.insert(0, PLACEHOLDER)
+        chat_entry.config(fg=TEXT_GRAY)
+
+chat_entry.bind("<FocusIn>",  focus_in)
+chat_entry.bind("<FocusOut>", focus_out)
+
+send_btn  = tk.Button(entry_row2, text="ASK", bg=ACCENT_PINK, fg=BG_DARK,
+                      font=("Georgia", 9, "bold"), relief="flat", bd=0, padx=14, cursor="hand2")
+clear_btn = tk.Button(entry_row2, text="CLEAR", bg=BG_PANEL, fg=CREAM_DIM,
+                      font=FONT_MONO, relief="flat", bd=0, padx=10, cursor="hand2")
+send_btn.pack(side="left", padx=(0, 6))
+clear_btn.pack(side="left")
+
+# ── Data store ───────────────────────────────────────────
+sim_data = {}
+
+# ── Online AI engine ─────────────────────────────────────
+def build_system_prompt(data):
+    """Build a rich system prompt from current simulation results."""
+    if not data:
+        return (
+            "No simulation has been run yet. Ask the user to run the Monte Carlo simulation first."
+        )
+    return f"""AI assistant embedded in a Monte Carlo Reserves Estimator application.
+
+Monte Carlo simulation with the following results:
+
+SIMULATION RESULTS:
+  Iterations run : {data.get('n', 0):,}
+  P90 (1C / Conservative)  : {data.get('p90', 0)/1e6:.4f} MMSTB  ({data.get('p90', 0):,.0f} STB)
+  P50 (2C / Most Likely)   : {data.get('p50', 0)/1e6:.4f} MMSTB  ({data.get('p50', 0):,.0f} STB)
+  P10 (3C / Optimistic)    : {data.get('p10', 0)/1e6:.4f} MMSTB  ({data.get('p10', 0):,.0f} STB)
+  Mean (Expected Value)    : {data.get('mean', 0)/1e6:.4f} MMSTB  ({data.get('mean', 0):,.0f} STB)
+  Standard Deviation       : {data.get('std', 0)/1e6:.4f} MMSTB
+  Minimum                  : {data.get('min', 0)/1e6:.4f} MMSTB
+  Maximum                  : {data.get('max', 0)/1e6:.4f} MMSTB
+  P5                       : {data.get('p5', 0)/1e6:.4f} MMSTB
+  P25                      : {data.get('p25', 0)/1e6:.4f} MMSTB
+  P75                      : {data.get('p75', 0)/1e6:.4f} MMSTB
+  P95                      : {data.get('p95', 0)/1e6:.4f} MMSTB
+
+STATISTICAL INDICATORS:
+  Coefficient of Variation : {data.get('cv', 0):.2%}
+  Skewness                 : {data.get('skewness', 0):.4f}
+  Risk Level               : {data.get('risk_level', 'N/A')}
+  Confidence               : {data.get('confidence', 'N/A')}
+
+NOTE on exceedance convention:
+  P90 = value exceeded by 90% of iterations (conservative floor)
+  P50 = value exceeded by 50% of iterations (base case median)
+  P10 = value exceeded by 10% of iterations (optimistic upside)
+"""
+
+def ask_ai_online(question):
+    """Call the online Hermes model and return the reply string."""
+    try:
+        res = client.chat.completions.create(
+            model=AI_MODEL,
+            max_tokens=512,
+            messages=[
+                {"role": "system", "content": build_system_prompt(sim_data)},
+                {"role": "user",   "content": question}
+            ]
+        )
+        return res.choices[0].message.content.strip()
+    except Exception as e:
+        return f"[Connection error: {e}]"
+
+def send_message():
+    q = chat_entry.get().strip()
+    if not q or q == PLACEHOLDER:
+        return
+
+    # Clear input immediately
+    chat_entry.delete(0, tk.END)
+    chat_entry.config(fg=TEXT_GRAY)
+    chat_entry.insert(0, PLACEHOLDER)
+
+    # Disable send while waiting
+    send_btn.config(state="disabled", text="...")
+    ai_status_lbl.config(text="● THINKING", fg=ORANGE_SOFT)
+
+    insert_chat("user", f"\n▶ You: {q}\n")
+    insert_chat("wait", "◆ AI:  thinking...\n")
+
+    def worker():
+        reply = ask_ai_online(q)
+        # Update UI from main thread
+        root.after(0, lambda: finish_reply(reply))
+
+    def finish_reply(reply):
+        # Remove the "thinking..." line
+        chat_box.config(state="normal")
+        chat_box.delete("end-2l", "end-1l")   # delete last inserted line
+        chat_box.config(state="disabled")
+
+        insert_chat("ai", f"◆ AI:  {reply}\n")
+        send_btn.config(state="normal", text="ASK")
+        ai_status_lbl.config(text="● ONLINE", fg=GREEN_SOFT)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+def clear_chat():
+    chat_box.config(state="normal")
+    chat_box.delete("1.0", tk.END)
+    chat_box.config(state="disabled")
+
+send_btn.config(command=send_message)
+clear_btn.config(command=clear_chat)
+chat_entry.bind("<Return>", lambda e: send_message())
+
+# ── Input Validation ─────────────────────────────────────
+PARAM_LABELS = {
+    "A":   "Area",
+    "h":   "Thickness",
+    "phi": "Porosity",
+    "So":  "Oil Saturation",
+    "RF":  "Recovery Factor",
+    "Bo":  "FVF (Bo)",
+}
+
+def highlight_entry(entry, error=True):
+    """Highlight an entry widget red on error, or restore normal colour."""
+    entry.config(bg="#3a1a1a" if error else BG_ENTRY,
+                 fg="#f0a090"  if error else ACCENT_LIGHT)
+
+def reset_entry_highlights():
+    iter_entry.config(bg=BG_ENTRY, fg=CREAM)
+    for entries in param_entries.values():
+        for e in entries:
+            highlight_entry(e, error=False)
+
+def validate_inputs():
+    """
+    Validate all user inputs before running the simulation.
+    Returns (True, parsed_values) on success, or (False, error_message) on failure.
+    parsed_values = { "n": int, params: {key: [min, mode, max]} }
+    """
+    reset_entry_highlights()
+
+    # --- Iterations ---
+    raw_n = iter_entry.get().strip()
+    try:
+        n = int(raw_n)
+        if n <= 0:
+            raise ValueError
+    except ValueError:
+        highlight_entry(iter_entry, error=True)
+        iter_entry.config(fg="#f0a090")
+        if not raw_n.lstrip("-").isdigit():
+            msg = f'Iterations: "{raw_n}" is not a valid number.\nPlease enter a positive whole number (e.g. 10000).'
+        else:
+            msg = "Iterations must be a positive whole number greater than zero."
+        return False, msg
+
+    # --- Reservoir parameters ---
+    parsed = {}
+    for key, entries in param_entries.items():
+        label = PARAM_LABELS[key]
+        sub_labels = ["Min", "Mode", "Max"]
+        vals = []
+        for idx, e in enumerate(entries):
+            raw = e.get().strip()
+            try:
+                v = float(raw)
+            except ValueError:
+                highlight_entry(e, error=True)
+                return False, (
+                    f'{label} — {sub_labels[idx]}: "{raw}" is not a valid number.\n'
+                    f'Only numeric values are allowed (e.g. 0.22, 1000, 55).'
+                )
+            vals.append(v)
+
+        mn, mode, mx = vals
+
+        # Logical order: min ≤ mode ≤ max
+        if not (mn <= mode <= mx):
+            for e in entries:
+                highlight_entry(e, error=True)
+            return False, (
+                f"{label}: Values must satisfy  Min ≤ Mode ≤ Max.\n"
+                f"Got  Min={mn},  Mode={mode},  Max={mx}."
+            )
+
+        # Min must be < Max for a valid distribution
+        if mn >= mx:
+            for e in entries:
+                highlight_entry(e, error=True)
+            return False, (
+                f"{label}: Min ({mn}) must be strictly less than Max ({mx})."
+            )
+
+         #All values must be positive
+        #if mn <= 0:
+            #highlight_entry(entries[0], error=True)
+            #return False, (
+                #f"{label}: All values must be greater than zero.\n"
+                #f"Min value entered: {mn}."
+            #)
+
+        parsed[key] = vals
+
+    return True, {"n": n, "params": parsed}
+
+
+# ── Attributes ──────────────────────────────────────────────
+def get_tri(entries):
+    return [float(e.get()) for e in entries]
+
+def classify_risk(cv):
+    if cv < 0.10: return "LOW"
+    if cv < 0.20: return "MODERATE"
+    if cv < 0.35: return "HIGH"
+    return "VERY HIGH"
+
+def classify_confidence(p90, p50):
+    ratio = p90 / p50 if p50 > 0 else 0
+    if ratio > 0.80: return "HIGH"
+    if ratio > 0.60: return "MODERATE"
+    return "LOW"
+
+def describe_skewness(skew):
+    if abs(skew) < 0.2: return "Symmetric",                   "Balanced — no strong directional bias."
+    if skew >  1.0:     return f"+{skew:.2f} (Strong Right)", "Strong upside tail — optimistic scenarios dominate."
+    if skew >  0.2:     return f"+{skew:.2f} (Right-skewed)", "Mild upside tail — mean exceeds median."
+    if skew < -1.0:     return f"{skew:.2f} (Strong Left)",   "Strong downside tail — pessimistic scenarios dominate."
+    return                     f"{skew:.2f} (Left-skewed)",   "Mild downside tail — median exceeds mean."
+
+RISK_COLORS = {"LOW": GREEN_SOFT, "MODERATE": ORANGE_SOFT, "HIGH": "#e8776a", "VERY HIGH": "#e85a4a"}
+CONF_COLORS = {"HIGH": GREEN_SOFT, "MODERATE": ORANGE_SOFT, "LOW": "#e8776a"}
+
+RISK_DESC = {
+    "LOW":       "CV < 10% — tight distribution, reliable inputs.",
+    "MODERATE":  "CV 10–20% — normal reservoir uncertainty.",
+    "HIGH":      "CV 20–35% — significant parameter spread.",
+    "VERY HIGH": "CV > 35% — high uncertainty, acquire more data.",
+}
+
+# ── Simulation ───────────────────────────────────────────
+def run_simulation():
+    # ── Validate first — abort on any error ──────────────
+    ok, result = validate_inputs()
+    if not ok:
+        show_error(result)
+        return
+    # Inputs are valid; clear any previous error
+    hide_error()
+
+    n = result["n"]
+
+    A   = get_tri(param_entries["A"])
+    h   = get_tri(param_entries["h"])
+    phi = get_tri(param_entries["phi"])
+    So  = get_tri(param_entries["So"])
+    RF  = get_tri(param_entries["RF"])
+    Bo  = get_tri(param_entries["Bo"])
+
+    _A   = np.random.uniform(A[0],   A[2],   n)
+    _h   = np.random.uniform(h[0],   h[2],   n)
+    _phi = np.random.uniform(phi[0], phi[2], n)
+    _So  = np.random.uniform(So[0],  So[2],  n)
+    _RF  = np.random.triangular(RF[0], RF[1], RF[2], n)
+    _Bo  = np.random.triangular(Bo[0], Bo[1], Bo[2], n)
+    Npo  = 7758 * _A * _h * _phi * _So * _RF / _Bo
+
+    p90 = float(np.percentile(Npo, 10))
+    p50 = float(np.percentile(Npo, 50))
+    p10 = float(np.percentile(Npo, 90))
+
+    p5  = float(np.percentile(Npo,  5))
+    p25 = float(np.percentile(Npo, 25))
+    p75 = float(np.percentile(Npo, 75))
+    p95 = float(np.percentile(Npo, 95))
+
+    mean_val = float(np.mean(Npo))
+    std_val  = float(np.std(Npo))
+    min_val  = float(np.min(Npo))
+    max_val  = float(np.max(Npo))
+    mmstb    = mean_val / 1_000_000
+    cv       = std_val / mean_val if mean_val > 0 else 0
+    skew_val = float(scipy_stats.skew(Npo))
+    risk     = classify_risk(cv)
+    conf     = classify_confidence(p90, p50)
+    skew_lbl, skew_desc = describe_skewness(skew_val)
+
+    sim_data.update({"p5": p5, "p10": p10, "p25": p25, "p50": p50, "p75": p75,
+                     "p90": p90, "p95": p95, "mean": mean_val, "std": std_val,
+                     "min": min_val, "max": max_val, "mmstb": mmstb, "cv": cv,
+                     "skewness": skew_val, "risk_level": risk,
+                     "confidence": conf, "n": n, "Npo": Npo,
+                     "_A": _A, "_h": _h, "_phi": _phi,
+                     "_So": _So, "_RF": _RF, "_Bo": _Bo})
+
+    # Result cards
+    for key, top, sub in [
+        ("P90",   f"{p90/1e6:.3f} MMSTB",      f"{p90:,.0f} STB"), #1000 = 1e6
+        ("P50",   f"{p50/1e6:.3f} MMSTB",      f"{p50:,.0f} STB"),
+        ("P10",   f"{p10/1e6:.3f} MMSTB",      f"{p10:,.0f} STB"),
+        ("MEAN",  f"{mean_val/1e6:.3f} MMSTB", f"Std Dev={std_val/1e6:.3f}"),
+        ("MMSTB", f"{mmstb:.3f} MMSTB",        f"CV={cv:.1%}"),
+    ]:
+        result_cards[key][0].config(text=top)
+        result_cards[key][1].config(text=sub)
+
+    # Info cards
+    info_cards["SKEWNESS"][0].config(text=skew_lbl)
+    info_cards["SKEWNESS"][1].config(text=skew_desc)
+    info_cards["RISK LEVEL"][0].config(text=risk, fg=RISK_COLORS.get(risk, ORANGE_SOFT))
+    info_cards["RISK LEVEL"][1].config(text=RISK_DESC[risk])
+    info_cards["CONFIDENCE"][0].config(text=conf, fg=CONF_COLORS.get(conf, ORANGE_SOFT))
+    info_cards["CONFIDENCE"][1].config(text={
+        "HIGH":     f"P90/P50={p90/p50:.2f} — estimates tightly constrained.",
+        "MODERATE": f"P90/P50={p90/p50:.2f} — reasonable appraisal confidence.",
+        "LOW":      f"P90/P50={p90/p50:.2f} — wide spread, low predictability.",
+    }[conf])
+
+    # Simulation table
+    for row in table_tv.get_children():
+        table_tv.delete(row)
+
+    for i, (metric, stb, note) in enumerate([
+        ("P5  (Extreme Low)",        p5,       "5% exceedance — extreme downside"),
+        ("P10 (Optimistic / 3C)",    p10,      "10% exceedance — upside case"),
+        ("P25 (Upper Mid)",          p25,      "25% exceedance"),
+        ("P50 (Most Likely / 2C)",   p50,      "50% exceedance — base case"),
+        ("P75 (Lower Mid)",          p75,      "75% exceedance"),
+        ("P90 (Conservative / 1C)",  p90,      "90% exceedance — bankable / downside"),
+        ("P95 (Extreme High)",       p95,      "95% exceedance — extreme upside"),
+        ("—", None, None),
+        ("Mean (Expected Value)",    mean_val, "Probability-weighted average"),
+        ("Standard Deviation",       std_val,  "Spread around mean"),
+        ("Minimum",                  min_val,  "Lowest simulated value"),
+        ("Maximum",                  max_val,  "Highest simulated value"),
+        ("—", None, None),
+        ("Coefficient of Variation", None, f"{cv:.1%} — relative uncertainty"),
+        ("Skewness",                 None, f"{skew_val:.4f} — {skew_lbl}"),
+        ("Risk Level",               None, risk),
+        ("Confidence Level",         None, conf),
+        ("Iterations Run",           None, f"{n:,}"),
+    ]):
+        if metric == "—":
+            table_tv.insert("", "end", values=("", "", "", ""), tags=("sep",))
+            continue
+        table_tv.insert("", "end",
+            values=(metric,
+                    f"{stb:,.4f}" if stb is not None else "—",
+                    f"{stb/1e6:.4f}" if stb is not None else "—",
+                    note),
+            tags=("even" if i % 2 == 0 else "odd",))
+
+    table_tv.tag_configure("even", background=BG_CARD)
+    table_tv.tag_configure("odd",  background="#1e1e25")
+    table_tv.tag_configure("sep",  background=BG_PANEL)
+
+    # Iteration results
+    iter_count_lbl.config(text=f"Showing all {n:,} iterations")
+    for row in iter_tv.get_children():
+        iter_tv.delete(row)
+
+    for i in range(n):
+        tag = "even" if i % 2 == 0 else "odd"
+        npo_stb = Npo[i]
+        npo_mm  = npo_stb / 1_000_000
+        iter_tv.insert("", "end", values=(
+            i + 1,
+            f"{_A[i]:.2f}",
+            f"{_h[i]:.4f}",
+            f"{_phi[i]:.6f}",
+            f"{_So[i]:.6f}",
+            f"{_RF[i]:.6f}",
+            f"{_Bo[i]:.6f}",
+            f"{npo_stb:,.4f}",
+            f"{npo_mm:.6f}",
+        ), tags=(tag,))
+    iter_tv.tag_configure("even", background=BG_CARD)
+    iter_tv.tag_configure("odd",  background="#1e1e25")
+
+    # ── Charts ────────────────────────────────────────────────────────────────
+    for w in graph_card.winfo_children():
+        w.destroy()
+
+    fig, axes = plt.subplots(2, 2, figsize=(11, 7))
+    fig.patch.set_facecolor("#16161c")
+    plt.subplots_adjust(hspace=0.45, wspace=0.38, left=0.08, right=0.93, top=0.92, bottom=0.11)
+
+    x_smooth = np.linspace(Npo.min(), Npo.max(), 800)
+    x_mm     = x_smooth / 1e6
+    x_range  = x_mm.max() - x_mm.min()
+
+    Npo_sorted = np.sort(Npo)
+    ecdf_y     = np.arange(1, n + 1) / n
+    exceed_y   = 1.0 - ecdf_y
+
+    cdf_smooth    = np.interp(x_smooth, Npo_sorted, ecdf_y,   left=0.0, right=1.0)
+    exceed_smooth = np.interp(x_smooth, Npo_sorted, exceed_y, left=1.0, right=0.0)
+
+    AX_BG  = "#1a1a22"
+    GRID_C = "#2e2e3a"
+    TICK_C = "#8a8490"
+
+    def style_ax(a, title, xlabel, ylabel):
+        a.set_facecolor(AX_BG)
+        a.set_title(title, color=CREAM, fontsize=9, pad=6)
+        a.set_xlabel(xlabel, color=TICK_C, fontsize=8)
+        a.set_ylabel(ylabel, color=TICK_C, fontsize=8)
+        a.grid(True, color=GRID_C, linewidth=0.5)
+        a.tick_params(colors=TICK_C, labelsize=7)
+        for sp in a.spines.values(): sp.set_color(BORDER)
+
+    a = axes[0, 0]
+    a.hist(Npo / 1e6, bins=40, density=True, color=ACCENT_PINK,
+           edgecolor=PINK_DEEP, linewidth=0.4, alpha=0.78)
+    a.axvline(mean_val/1e6, color=CREAM,       ls="--", lw=1.5, label=f"Mean={mean_val/1e6:.2f}")
+    a.axvline(p50/1e6,      color=BLUE_SOFT,   ls=":",  lw=1.3, label=f"P50={p50/1e6:.2f}")
+    a.axvline(p90/1e6,      color=ORANGE_SOFT, ls=":",  lw=1.3, label=f"P90={p90/1e6:.2f}")
+    a.axvline(p10/1e6,      color=GREEN_SOFT,  ls=":",  lw=1.3, label=f"P10={p10/1e6:.2f}")
+    a.legend(fontsize=7, facecolor=BG_CARD, edgecolor=BORDER, labelcolor=CREAM)
+    style_ax(a, "PDF", "Ultimate Cumulative Oil (MMSTB)", "Probability")
+
+    a = axes[0, 1]
+    a.plot(x_mm, cdf_smooth, color=ACCENT_PINK, lw=2.2, solid_capstyle="round")
+    for val, col, y_cdf in [
+        (p10, ORANGE_SOFT, 0.90),
+        (p50, BLUE_SOFT, 0.50),
+        (p90, GREEN_SOFT, 0.10),
+    ]:
+        a.axvline(val / 1e6, color=col, lw=1.2, ls="--", alpha=0.9)
+        a.axhline(y_cdf, color=col, lw=1.0, ls="-", alpha=0.7)
+    style_ax(a, "CDF",
+             "Ultimate Cumulative Oil (MMSTB)", "Cumulative Probability")
+
+    a = axes[1, 0]
+    a.plot(x_mm, exceed_smooth * 100, color=ACCENT_PINK, lw=2.2, solid_capstyle="round")
+    for val, col, lbl, ypos in [
+        (p90, ORANGE_SOFT, f"P90={p90/1e6:.1f}", 90),
+        (p50, BLUE_SOFT,   f"P50={p50/1e6:.1f}", 50),
+        (p10, GREEN_SOFT,  f"P10={p10/1e6:.1f}", 10),
+    ]:
+        a.axhline(ypos,    color=col, lw=1.0, ls="-",  alpha=0.70, xmin=0, xmax=1)
+        a.axvline(val/1e6, color=col, lw=1.2, ls="--", alpha=0.90)
+        a.text(val/1e6 + x_range * 0.02, ypos + 2.5, lbl,
+               color=col, fontsize=7,
+               bbox=dict(boxstyle="round,pad=0.25", fc=AX_BG, ec=col, alpha=0.85, lw=0.6))
+    a.set_ylim(-2, 105)
+    a.set_yticks([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100])
+    style_ax(a, "Inverse CDF",
+             "Ultimate Cumulative Oil (MMSTB)", "Exceedance %")
+
+    a = axes[1, 1]
+    a.fill_between(x_mm, exceed_smooth, alpha=0.18, color=ACCENT_PINK)
+    a.plot(x_mm, exceed_smooth, color=ACCENT_PINK, lw=2.2, solid_capstyle="round")
+    for val, pct, col, lbl in [
+        (p90, 0.90, ORANGE_SOFT, f"P90={p90/1e6:.1f}"),
+        (p50, 0.50, BLUE_SOFT,   f"P50={p50/1e6:.1f}"),
+        (p10, 0.10, GREEN_SOFT,  f"P10={p10/1e6:.1f}"),
+    ]:
+        a.axhline(pct,     color=col, lw=1.0, ls="-",  alpha=0.70, xmin=0, xmax=1)
+        a.axvline(val/1e6, color=col, lw=1.2, ls="--", alpha=0.90)
+        a.text(val/1e6 + x_range * 0.02, pct + 0.018, lbl,
+               color=col, fontsize=7,
+               bbox=dict(boxstyle="round,pad=0.25", fc=AX_BG, ec=col, alpha=0.85, lw=0.6))
+    a.set_ylim(-0.02, 1.05)
+    a.set_yticks([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
+    style_ax(a, "Inverse CDF",
+             "Ultimate Cumulative Oil (MMSTB)", "Probability")
+
+    fig_canvas = FigureCanvasTkAgg(fig, master=graph_card)
+    fig_canvas.draw()
+    fig_canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    notebook.select(charts_tab)
+
+    # Auto-announce to AI chat
+    insert_chat("sys",
+        f"\n◈ Simulation complete — {n:,} iterations.\n"
+        f"  P90={p90/1e6:.3f}  P50={p50/1e6:.3f}  P10={p10/1e6:.3f} MMSTB\n"
+        f"  Risk: {risk}  |  Confidence: {conf}  |  Skewness: {skew_val:.3f}\n"
+        f"  AI is ready — ask anything about these results.\n")
+
+run_btn.config(command=run_simulation)
+
+# ── Startup message ──────────────────────────────────────
+insert_chat("sys",
+    "◈ Monte Carlo Reserves Estimator — AI Analyst ready.\n"
+    f"  Connected to: {client.base_url}\n"
+    "  Run a simulation, then ask questions here.\n")
+
+root.mainloop()
